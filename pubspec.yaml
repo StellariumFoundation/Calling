@@ -38,6 +38,7 @@ dependencies:
   # For parsing phone numbers (Pure Dart, high accuracy)
   phone_numbers_parser: ^9.0.18
   flutter_phone_direct_caller: ^2.1.0
+  permission_handler: ^11.3.1
 
 dev_dependencies:
   flutter_test:
