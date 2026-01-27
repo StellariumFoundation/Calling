@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path/path.dart';
+// FIX: Import path as an alias 'p' to avoid conflict with BuildContext
+import 'package:path/path.dart' as p; 
 import 'package:sqflite/sqflite.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:phone_numbers_parser/phone_numbers_parser.dart';
@@ -67,7 +68,8 @@ class DatabaseHelper {
 
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
-    final path = join(dbPath, filePath);
+    // FIX: Use p.join because we aliased the import
+    final path = p.join(dbPath, filePath);
 
     return await openDatabase(path, version: 1, onCreate: _createDB);
   }
