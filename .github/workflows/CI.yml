@@ -1,4 +1,4 @@
-name: Build & Release TapTalk
+name: Build & Release Calling
 
 on:
   push:
@@ -31,7 +31,7 @@ jobs:
       
       # Move it immediately so the next build doesn't delete it
       - name: Rename Universal APK
-        run: mv build/app/outputs/flutter-apk/app-release.apk TapTalk-Universal.apk
+        run: mv build/app/outputs/flutter-apk/app-release.apk Calling-Universal.apk
 
       # 2. Build SPLIT APKs (arm64, armv7, x86_64)
       - name: Build Split APKs
@@ -40,15 +40,15 @@ jobs:
       # Rename the split files to readable names
       - name: Rename Split APKs
         run: |
-          mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk TapTalk-Android-arm64.apk
-          mv build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk TapTalk-Android-armv7.apk
-          mv build/app/outputs/flutter-apk/app-x86_64-release.apk TapTalk-Android-x86.apk
+          mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk Calling-Android-arm64.apk
+          mv build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk Calling-Android-armv7.apk
+          mv build/app/outputs/flutter-apk/app-x86_64-release.apk Calling-Android-x86.apk
 
       # Upload ALL of them
       - uses: actions/upload-artifact@v4
         with:
-          name: TapTalk-Android-All
-          path: TapTalk-*.apk
+          name: Calling-Android-All
+          path: Calling-*.apk
 
   # ---------------------------------------------------
   # 2. LINUX BUILD
@@ -58,6 +58,85 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Linux Dependencies
+        # Updated dependencies: Added libsqlite3-dev (Required for sqflite)
+        # Removed espeak (Not needed for this app)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libsqlite3-dev
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+      - run: flutter config --enable-linux-desktop
+      - run: flutter pub get
+      - run: flutter build linux --release
+      
+      - name: Compress Build
+        run: tar -czvf Calling-Linux.tar.gz -C build/linux/x64/release/bundle .
+        
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Calling-Linux
+          path: Calling-Linux.tar.gz
+
+  # ---------------------------------------------------
+  # 3. WEB BUILD
+  # ---------------------------------------------------
+  build-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+      - run: flutter pub get
+      - run: flutter build web --release
+      
+      - name: Compress Build
+        run: zip -r Calling-Web.zip build/web
+        
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Calling-Web
+          path: Calling-Web.zip
+
+  # ---------------------------------------------------
+  # 4. AUTOMATIC RELEASE
+  # ---------------------------------------------------
+  create-release:
+    needs: [build-android, build-linux, build-web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get Version from Pubspec
+        id: get_version
+        run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | tr -d ' ')
+          echo "Detected Version: $VERSION"
+          echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Download all Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all_artifacts
+
+      - name: Move artifacts to root
+        run: |
+          mv all_artifacts/Calling-Android-All/*.apk .
+          mv all_artifacts/Calling-Linux/*.tar.gz .
+          mv all_artifacts/Calling-Web/*.zip .
+
+      - name: Create or Update Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ env.APP_VERSION }}
+          name: Release v${{ env.APP_VERSION }}
+          files: |
+            *.apk
+            *.tar.gz
+            *.zip
+          draft: false
+          prerelease: false      - name: Install Linux Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libespeak-ng-dev espeak-ng
