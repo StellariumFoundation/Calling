@@ -4,8 +4,10 @@ import 'package:flutter/services.dart';
 // FIX: Import path as an alias 'p' to avoid conflict with BuildContext
 import 'package:path/path.dart' as p; 
 import 'package:sqflite/sqflite.dart';
-// CHANGED: Use direct caller instead of url_launcher
+// Direct caller
 import 'package:flutter_phone_direct_caller/flutter_phone_direct_caller.dart';
+// Permission Handler
+import 'package:permission_handler/permission_handler.dart';
 import 'package:phone_numbers_parser/phone_numbers_parser.dart';
 
 void main() {
@@ -69,7 +71,6 @@ class DatabaseHelper {
 
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
-    // FIX: Use p.join because we aliased the import
     final path = p.join(dbPath, filePath);
 
     return await openDatabase(path, version: 1, onCreate: _createDB);
@@ -87,7 +88,6 @@ class DatabaseHelper {
 
   Future<void> insertNumber(String number) async {
     final db = await instance.database;
-    // Insert or Ignore to avoid duplicates crashing the app
     await db.rawInsert(
       'INSERT OR IGNORE INTO numbers(number, wasCalled) VALUES(?, ?)',
       [number, 0],
@@ -158,7 +158,7 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
   List<PhoneNumberModel> _numbers = [];
   Map<String, int> _stats = {'total': 0, 'called': 0, 'remaining': 0};
   String? _lastCalledNumber;
-  int? _currentProcessingId; // ID of the number currently being called
+  int? _currentProcessingId; 
   bool _isLoading = false;
 
   @override
@@ -175,11 +175,8 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
     super.dispose();
   }
 
-  // Detect when user returns to app to update status
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // When calling directly, the app goes to background (paused) and then returns (resumed)
-    // when the call ends or the user navigates back.
     if (state == AppLifecycleState.resumed && _currentProcessingId != null) {
       _finalizeCall();
     }
@@ -210,15 +207,12 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
     }
   }
 
-  // 1. Parse Logic
   Future<void> _parseAndAdd() async {
     if (_textController.text.isEmpty) return;
 
     setState(() => _isLoading = true);
 
     String rawText = _textController.text;
-    
-    // Regex to find sequences of digits (at least 8) allowing for formatting chars
     RegExp exp = RegExp(r'[\d\+\-\(\)\s]{8,}');
     Iterable<RegExpMatch> matches = exp.allMatches(rawText);
 
@@ -227,24 +221,21 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
     for (final match in matches) {
       String candidate = match.group(0)!.trim();
       
-      // --- NINTH DIGIT FIX LOGIC START ---
       String cleanDigits = candidate.replaceAll(RegExp(r'\D'), '');
       
-      // Case 1: DDD + Number (10 digits)
+      // Ninth digit logic
       if (cleanDigits.length == 10) {
         int firstDigit = int.parse(cleanDigits.substring(2, 3));
         if (firstDigit >= 6) {
           candidate = '${cleanDigits.substring(0, 2)}9${cleanDigits.substring(2)}';
         }
       } 
-      // Case 2: 55 + DDD + Number (12 digits)
       else if (cleanDigits.length == 12 && cleanDigits.startsWith('55')) {
          int firstDigit = int.parse(cleanDigits.substring(4, 5));
          if (firstDigit >= 6) {
            candidate = '${cleanDigits.substring(0, 4)}9${cleanDigits.substring(4)}';
          }
       }
-      // --- NINTH DIGIT FIX LOGIC END ---
 
       try {
         final parsed = PhoneNumber.parse(candidate, destinationCountry: IsoCode.BR);
@@ -253,8 +244,6 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
           String international = '+${parsed.countryCode}${parsed.nsn}'; 
           await _db.insertNumber(international);
           addedCount++;
-        } else {
-          debugPrint("Invalid number: $candidate");
         }
       } catch (e) {
         debugPrint("Parse error: $e");
@@ -272,8 +261,40 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
     }
   }
 
-  // 2. Call Logic (Direct Call)
+  // UPDATED: Call Logic with Permission Check
   Future<void> _makeCall({String? specificNumber}) async {
+    // 1. Check Permissions FIRST
+    var status = await Permission.phone.status;
+    if (!status.isGranted) {
+      status = await Permission.phone.request();
+      if (!status.isGranted) {
+        if (mounted) {
+           if (status.isPermanentlyDenied) {
+              // Open settings if permanently denied
+              showDialog(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: const Text("Permission Required"),
+                  content: const Text("Phone permission is required to make calls. Please enable it in settings."),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
+                    TextButton(onPressed: () { 
+                      Navigator.pop(ctx);
+                      openAppSettings();
+                    }, child: const Text("Settings")),
+                  ],
+                )
+              );
+           } else {
+             ScaffoldMessenger.of(context).showSnackBar(
+               const SnackBar(content: Text("Phone permission denied")),
+             );
+           }
+        }
+        return;
+      }
+    }
+
     PhoneNumberModel? target;
 
     if (specificNumber != null) {
@@ -320,14 +341,12 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
     });
 
     try {
-      // CHANGED: Use direct caller
+      // Permission is granted, make the call
       bool? res = await FlutterPhoneDirectCaller.callNumber(target.number);
       
       if (res != true) {
-        throw 'Direct call returned false/null. check permissions.';
+        throw 'Direct call failed (returned false/null)';
       }
-      // Success: App will now background. When you hang up, 
-      // didChangeAppLifecycleState will trigger _finalizeCall.
       
     } catch (e) {
       if(mounted) {

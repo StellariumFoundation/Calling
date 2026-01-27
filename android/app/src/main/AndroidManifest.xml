@@ -1,9 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<uses-permission android:name="android.permission.CALL_PHONE" />
     <application
         android:label="Calling"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
-        <uses-permission android:name="android.permission.CALL_PHONE" />
+        
         <activity
             android:name=".MainActivity"
             android:exported="true"
