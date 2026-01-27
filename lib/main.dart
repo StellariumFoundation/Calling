@@ -4,7 +4,8 @@ import 'package:flutter/services.dart';
 // FIX: Import path as an alias 'p' to avoid conflict with BuildContext
 import 'package:path/path.dart' as p; 
 import 'package:sqflite/sqflite.dart';
-import 'package:url_launcher/url_launcher.dart';
+// CHANGED: Use direct caller instead of url_launcher
+import 'package:flutter_phone_direct_caller/flutter_phone_direct_caller.dart';
 import 'package:phone_numbers_parser/phone_numbers_parser.dart';
 
 void main() {
@@ -177,8 +178,9 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
   // Detect when user returns to app to update status
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // When calling directly, the app goes to background (paused) and then returns (resumed)
+    // when the call ends or the user navigates back.
     if (state == AppLifecycleState.resumed && _currentProcessingId != null) {
-      // User returned from the dialer
       _finalizeCall();
     }
   }
@@ -202,7 +204,7 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Call ended. Database updated.')),
+          const SnackBar(content: Text('Call cycle finished. Database updated.')),
         );
       }
     }
@@ -226,24 +228,19 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
       String candidate = match.group(0)!.trim();
       
       // --- NINTH DIGIT FIX LOGIC START ---
-      // Remove everything that is not a digit to analyze length
       String cleanDigits = candidate.replaceAll(RegExp(r'\D'), '');
       
-      // Case 1: User typed DDD + Number (e.g., 6188377338) - Total 10 digits
-      // In Brazil, Landlines start with 2-5, Mobiles start with 6-9 (historically).
+      // Case 1: DDD + Number (10 digits)
       if (cleanDigits.length == 10) {
         int firstDigit = int.parse(cleanDigits.substring(2, 3));
         if (firstDigit >= 6) {
-          // It's a mobile missing the 9. Inject it.
-          // Turns 6188377338 -> 61988377338
           candidate = '${cleanDigits.substring(0, 2)}9${cleanDigits.substring(2)}';
         }
       } 
-      // Case 2: User typed 55 + DDD + Number (e.g., 556188377338) - Total 12 digits
+      // Case 2: 55 + DDD + Number (12 digits)
       else if (cleanDigits.length == 12 && cleanDigits.startsWith('55')) {
          int firstDigit = int.parse(cleanDigits.substring(4, 5));
          if (firstDigit >= 6) {
-           // Insert 9 after DDD
            candidate = '${cleanDigits.substring(0, 4)}9${cleanDigits.substring(4)}';
          }
       }
@@ -253,9 +250,7 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
         final parsed = PhoneNumber.parse(candidate, destinationCountry: IsoCode.BR);
         
         if (parsed.isValid()) {
-          // This will now output +5561988377338 due to the fix above
           String international = '+${parsed.countryCode}${parsed.nsn}'; 
-          
           await _db.insertNumber(international);
           addedCount++;
         } else {
@@ -277,21 +272,16 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
     }
   }
 
-  // 2. Call Logic
+  // 2. Call Logic (Direct Call)
   Future<void> _makeCall({String? specificNumber}) async {
     PhoneNumberModel? target;
 
     if (specificNumber != null) {
-      // Re-calling specific number
       target = PhoneNumberModel(number: specificNumber); 
-      // We don't track ID here because "Call Again" doesn't change database status 
-      // (it was likely already marked called).
     } else {
-      // Get next from DB
       target = await _db.getNextNumberToCall();
 
       if (target == null) {
-        // Rotation Logic
         if (_stats['total']! > 0 && _stats['remaining'] == 0) {
            bool confirm = await showDialog(
              context: context, 
@@ -307,7 +297,7 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
            if (confirm) {
              await _db.resetRotation();
              await _refreshData();
-             _makeCall(); // Recursive call to start new batch
+             _makeCall(); 
              return;
            } else {
              return;
@@ -320,7 +310,6 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
         }
       }
       
-      // Setup state to mark as called when returning
       setState(() {
         _currentProcessingId = target!.id;
       });
@@ -330,23 +319,20 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
       _lastCalledNumber = target!.number;
     });
 
-    final Uri launchUri = Uri(
-      scheme: 'tel',
-      path: target.number,
-    );
-
     try {
-      if (await canLaunchUrl(launchUri)) {
-        await launchUrl(launchUri);
-        // Note: Actual DB update happens in didChangeAppLifecycleState
-      } else {
-         throw 'Could not launch $launchUri';
+      // CHANGED: Use direct caller
+      bool? res = await FlutterPhoneDirectCaller.callNumber(target.number);
+      
+      if (res != true) {
+        throw 'Direct call returned false/null. check permissions.';
       }
+      // Success: App will now background. When you hang up, 
+      // didChangeAppLifecycleState will trigger _finalizeCall.
+      
     } catch (e) {
       if(mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error launching call: $e")));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error Calling: $e")));
       }
-      // Reset state if launch fails
       setState(() {
         _currentProcessingId = null;
       });
@@ -363,7 +349,6 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
       ),
       body: Column(
         children: [
-          // Status Bar
           Container(
             color: Colors.grey[200],
             padding: const EdgeInsets.all(12),
@@ -377,7 +362,6 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
             ),
           ),
           
-          // Input Area
           Padding(
             padding: const EdgeInsets.all(16.0),
             child: Column(
@@ -388,7 +372,7 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
                   maxLines: 3,
                   decoration: const InputDecoration(
                     border: OutlineInputBorder(),
-                    hintText: 'Paste text with numbers here (e.g., "Bob: 11 99999-9999")',
+                    hintText: 'Paste text with numbers here',
                     labelText: 'Import Numbers',
                   ),
                 ),
@@ -404,7 +388,6 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
 
           const Divider(),
 
-          // Central Action Area
           Expanded(
             flex: 2,
             child: Center(
@@ -459,7 +442,6 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
             ),
           ),
 
-          // Database Preview (Mini list)
           const Padding(
             padding: EdgeInsets.only(left: 16.0, top: 8),
             child: Align(
