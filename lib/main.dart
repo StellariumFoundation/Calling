@@ -9,47 +9,54 @@ import 'package:phone_numbers_parser/phone_numbers_parser.dart';
 import 'package:audio_service/audio_service.dart';
 import 'package:phone_state/phone_state.dart';
 
-late MyCallAudioHandler _handler;
+// Use a nullable handler to avoid "Late Initialization" errors
+MyCallAudioHandler? _handler;
 
 Future<void> main() async {
+  // 1. Ensure Flutter is ready
   WidgetsFlutterBinding.ensureInitialized();
   
-  _handler = await AudioService.init(
-    builder: () => MyCallAudioHandler(),
-    config: const AudioServiceConfig(
-      androidNotificationChannelId: 'com.jv.calling.channel.audio',
-      androidNotificationChannelName: 'Call Center Service',
-      androidNotificationOngoing: false, 
-      androidStopForegroundOnPause: false,
-    ),
-  );
-
+  // 2. Start the UI IMMEDIATELY to avoid the blank screen
   runApp(const CallCenterApp());
+
+  // 3. Initialize background service after UI starts
+  try {
+    _handler = await AudioService.init(
+      builder: () => MyCallAudioHandler(),
+      config: const AudioServiceConfig(
+        androidNotificationChannelId: 'com.jv.calling.channel.audio',
+        androidNotificationChannelName: 'Call Center Service',
+        // Combined these to satisfy library rules and keep app alive
+        androidNotificationOngoing: true, 
+        androidStopForegroundOnPause: true, 
+      ),
+    );
+  } catch (e) {
+    debugPrint("AudioService failed to start: $e");
+  }
 }
 
 class MyCallAudioHandler extends BaseAudioHandler {
   PhoneStateStatus _currentPhoneStatus = PhoneStateStatus.NOTHING;
 
   MyCallAudioHandler() {
+    // Background listener for phone state
     PhoneState.stream.listen((event) {
       _currentPhoneStatus = event.status;
-      // If a call starts, we should set our state to "paused" so we don't interfere
-      // If a call ends, we set it back to "playing" to regain control of the button
-      if (_currentPhoneStatus == PhoneStateStatus.NOTHING || _currentPhoneStatus == PhoneStateStatus.CALL_ENDED) {
+      if (_currentPhoneStatus == PhoneStateStatus.NOTHING || 
+          _currentPhoneStatus == PhoneStateStatus.CALL_ENDED) {
         _takeControl();
       }
     });
-
     _takeControl();
   }
 
-  // THIS IS THE KEY: We tell Android we are "playing" so we get the button events
   void _takeControl() {
     playbackState.add(PlaybackState(
       controls: [MediaControl.play, MediaControl.pause],
       systemActions: {MediaAction.play, MediaAction.pause, MediaAction.playPause},
       processingState: AudioProcessingState.ready,
-      playing: true, // We lie to the OS and say we are playing to hijack the button
+      playing: true, 
     ));
   }
 
@@ -57,57 +64,41 @@ class MyCallAudioHandler extends BaseAudioHandler {
   Future<void> play() => _checkAndDial();
   @override
   Future<void> pause() => _checkAndDial();
-  
-  // Some headsets send 'stop' or 'fastForward' depending on the brand
   @override
   Future<void> stop() => _checkAndDial();
 
   Future<void> _checkAndDial() async {
     if (_currentPhoneStatus != PhoneStateStatus.NOTHING && 
-        _currentPhoneStatus != PhoneStateStatus.CALL_ENDED) {
-      return; 
-    }
+        _currentPhoneStatus != PhoneStateStatus.CALL_ENDED) return;
     await _makeBackgroundCall();
   }
 
   Future<void> _makeBackgroundCall() async {
     if (!await Permission.phone.isGranted) return;
-
     final dbPath = await getDatabasesPath();
     final database = await openDatabase(p.join(dbPath, 'callcenter.db'));
-
     final List<Map<String, dynamic>> maps = await database.query(
-      'numbers',
-      where: 'wasCalled = ?',
-      whereArgs: [0],
-      limit: 1,
+      'numbers', where: 'wasCalled = ?', whereArgs: [0], limit: 1,
     );
-
     if (maps.isNotEmpty) {
       final id = maps.first['id'] as int;
       final number = maps.first['number'] as String;
-
-      bool? res = await FlutterPhoneDirectCaller.callNumber(number);
-      if (res == true) {
+      if (await FlutterPhoneDirectCaller.callNumber(number) ?? false) {
         await database.update('numbers', {'wasCalled': 1}, where: 'id = ?', whereArgs: [id]);
       }
     }
     await database.close();
-    
-    // After dialing, ensure we still have focus
     _takeControl();
   }
 }
 
-// --------------------------------------------------------------------------
-// UI (Same as before, no changes needed to UI isolate)
-// --------------------------------------------------------------------------
 class CallCenterApp extends StatelessWidget {
   const CallCenterApp({super.key});
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Call Center Auto',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
       home: const CallCenterHome(),
     );
@@ -161,18 +152,22 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
   }
 
   Future<void> _refreshData() async {
-    final dbPath = await getDatabasesPath();
-    final db = await openDatabase(p.join(dbPath, 'callcenter.db'), version: 1, onCreate: (db, v) async {
-      await db.execute('CREATE TABLE numbers (id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT UNIQUE, wasCalled INTEGER)');
-    });
-    final List<Map<String, dynamic>> res = await db.query('numbers');
-    final total = Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM numbers')) ?? 0;
-    final called = Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM numbers WHERE wasCalled = 1')) ?? 0;
-    setState(() {
-      _numbers = res.map((m) => PhoneNumberModel.fromMap(m)).toList();
-      _stats = {'total': total, 'called': called, 'remaining': total - called};
-    });
-    await db.close();
+    try {
+      final dbPath = await getDatabasesPath();
+      final db = await openDatabase(p.join(dbPath, 'callcenter.db'), version: 1, onCreate: (db, v) async {
+        await db.execute('CREATE TABLE numbers (id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT UNIQUE, wasCalled INTEGER)');
+      });
+      final List<Map<String, dynamic>> res = await db.query('numbers');
+      final total = Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM numbers')) ?? 0;
+      final called = Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM numbers WHERE wasCalled = 1')) ?? 0;
+      setState(() {
+        _numbers = res.map((m) => PhoneNumberModel.fromMap(m)).toList();
+        _stats = {'total': total, 'called': called, 'remaining': total - called};
+      });
+      await db.close();
+    } catch (e) {
+      debugPrint("Database refresh error: $e");
+    }
   }
 
   Future<void> _parseAndAdd() async {
@@ -211,7 +206,13 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Already in a call!")));
        return;
     }
-    await _handler.play();
+    
+    // Call via handler if it exists, otherwise dial directly as fallback
+    if (_handler != null) {
+      await _handler!.play();
+    } else {
+      _refreshData(); // fallback refresh
+    }
     Future.delayed(const Duration(seconds: 1), () => _refreshData());
   }
 
