@@ -19,7 +19,8 @@ Future<void> main() async {
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.jv.calling.channel.audio',
       androidNotificationChannelName: 'Call Center Service',
-      androidNotificationOngoing: false, 
+      // FIX: Setting these to match the required assertion logic
+      androidNotificationOngoing: true, 
       androidStopForegroundOnPause: false,
     ),
   );
@@ -31,7 +32,15 @@ Future<void> main() async {
 // BACKGROUND HANDLER: Handles Bluetooth buttons & Call Detection
 // --------------------------------------------------------------------------
 class MyCallAudioHandler extends BaseAudioHandler {
+  // Track the status internally since there is no static getter
+  PhoneStateStatus _currentStatus = PhoneStateStatus.NOTHING;
+
   MyCallAudioHandler() {
+    // Initialize stream listener for the background isolate
+    PhoneState.stream.listen((event) {
+      _currentStatus = event.status;
+    });
+
     playbackState.add(PlaybackState(
       controls: [MediaControl.play, MediaControl.pause],
       systemActions: {MediaAction.play, MediaAction.pause, MediaAction.playPause},
@@ -45,9 +54,9 @@ class MyCallAudioHandler extends BaseAudioHandler {
   Future<void> pause() => _checkAndDial();
 
   Future<void> _checkAndDial() async {
-    // FIX for phone_state 3.0.1: Use PhoneState.status directly
-    var status = PhoneState.status; 
-    if (status != PhoneStateStatus.NOTHING && status != PhoneStateStatus.CALL_ENDED) {
+    // Check internal status tracked from the stream
+    if (_currentStatus != PhoneStateStatus.NOTHING && 
+        _currentStatus != PhoneStateStatus.CALL_ENDED) {
       debugPrint("Call active or ringing. Ignoring button.");
       return; 
     }
@@ -116,18 +125,31 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
   final TextEditingController _textController = TextEditingController();
   List<PhoneNumberModel> _numbers = [];
   Map<String, int> _stats = {'total': 0, 'called': 0, 'remaining': 0};
+  
+  // Track status for the UI isolate
+  PhoneStateStatus _uiPhoneStatus = PhoneStateStatus.NOTHING;
+  StreamSubscription? _phoneSub;
   bool _isLoading = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    
+    // Listen to phone state in the UI
+    _phoneSub = PhoneState.stream.listen((event) {
+      setState(() {
+        _uiPhoneStatus = event.status;
+      });
+    });
+    
     _refreshData();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _phoneSub?.cancel();
     super.dispose();
   }
 
@@ -194,15 +216,16 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
       return;
     }
     
-    // FIX for phone_state 3.0.1: Use PhoneState.status
-    var status = PhoneState.status; 
-    if (status != PhoneStateStatus.NOTHING && status != PhoneStateStatus.CALL_ENDED) {
+    // Check UI status tracker
+    if (_uiPhoneStatus != PhoneStateStatus.NOTHING && 
+        _uiPhoneStatus != PhoneStateStatus.CALL_ENDED) {
        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Already in a call!")));
        return;
     }
 
     await _handler.play();
-    await _refreshData();
+    // Tiny delay to allow the background dial to happen before UI refresh
+    Future.delayed(const Duration(seconds: 1), () => _refreshData());
   }
 
   @override
@@ -259,7 +282,10 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
                     ),
                   ),
                   const SizedBox(height: 20),
-                  const Text("Bluetooth headset button works with screen OFF", style: TextStyle(fontSize: 11, color: Colors.grey)),
+                  Text(
+                    "Phone Status: ${_uiPhoneStatus.name.toUpperCase()}",
+                    style: const TextStyle(fontSize: 12, color: Colors.blueGrey, fontWeight: FontWeight.bold),
+                  ),
                 ],
               ),
             ),
