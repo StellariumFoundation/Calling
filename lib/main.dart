@@ -19,8 +19,9 @@ Future<void> main() async {
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.jv.calling.channel.audio',
       androidNotificationChannelName: 'Call Center Service',
-      // FIX: Setting these to match the required assertion logic
-      androidNotificationOngoing: true, 
+      // FIX: Setting these to satisfy the library's internal assertion logic
+      // !androidNotificationOngoing || androidStopForegroundOnPause must be true
+      androidNotificationOngoing: false, 
       androidStopForegroundOnPause: false,
     ),
   );
@@ -32,13 +33,13 @@ Future<void> main() async {
 // BACKGROUND HANDLER: Handles Bluetooth buttons & Call Detection
 // --------------------------------------------------------------------------
 class MyCallAudioHandler extends BaseAudioHandler {
-  // Track the status internally since there is no static getter
-  PhoneStateStatus _currentStatus = PhoneStateStatus.NOTHING;
+  // We must track the state manually via the stream in 3.0.1
+  PhoneStateStatus _currentPhoneStatus = PhoneStateStatus.NOTHING;
 
   MyCallAudioHandler() {
-    // Initialize stream listener for the background isolate
+    // Start listening to the stream immediately in the background isolate
     PhoneState.stream.listen((event) {
-      _currentStatus = event.status;
+      _currentPhoneStatus = event.status;
     });
 
     playbackState.add(PlaybackState(
@@ -54,10 +55,10 @@ class MyCallAudioHandler extends BaseAudioHandler {
   Future<void> pause() => _checkAndDial();
 
   Future<void> _checkAndDial() async {
-    // Check internal status tracked from the stream
-    if (_currentStatus != PhoneStateStatus.NOTHING && 
-        _currentStatus != PhoneStateStatus.CALL_ENDED) {
-      debugPrint("Call active or ringing. Ignoring button.");
+    // Logic: Only dial if phone is NOT in a call and NOT ringing
+    if (_currentPhoneStatus != PhoneStateStatus.NOTHING && 
+        _currentPhoneStatus != PhoneStateStatus.CALL_ENDED) {
+      debugPrint("Call active or ringing. Ignoring Bluetooth button.");
       return; 
     }
 
@@ -126,7 +127,7 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
   List<PhoneNumberModel> _numbers = [];
   Map<String, int> _stats = {'total': 0, 'called': 0, 'remaining': 0};
   
-  // Track status for the UI isolate
+  // Track status for the UI isolate using the stream
   PhoneStateStatus _uiPhoneStatus = PhoneStateStatus.NOTHING;
   StreamSubscription? _phoneSub;
   bool _isLoading = false;
@@ -136,11 +137,13 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     
-    // Listen to phone state in the UI
+    // Listen to phone state for UI feedback
     _phoneSub = PhoneState.stream.listen((event) {
-      setState(() {
-        _uiPhoneStatus = event.status;
-      });
+      if (mounted) {
+        setState(() {
+          _uiPhoneStatus = event.status;
+        });
+      }
     });
     
     _refreshData();
@@ -216,7 +219,7 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
       return;
     }
     
-    // Check UI status tracker
+    // Safety: Check if already in call
     if (_uiPhoneStatus != PhoneStateStatus.NOTHING && 
         _uiPhoneStatus != PhoneStateStatus.CALL_ENDED) {
        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Already in a call!")));
@@ -224,7 +227,7 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
     }
 
     await _handler.play();
-    // Tiny delay to allow the background dial to happen before UI refresh
+    // Tiny delay to allow background process to update DB
     Future.delayed(const Duration(seconds: 1), () => _refreshData());
   }
 
