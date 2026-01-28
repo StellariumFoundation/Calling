@@ -19,8 +19,6 @@ Future<void> main() async {
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.jv.calling.channel.audio',
       androidNotificationChannelName: 'Call Center Service',
-      // FIX: Setting these to satisfy the library's internal assertion logic
-      // !androidNotificationOngoing || androidStopForegroundOnPause must be true
       androidNotificationOngoing: false, 
       androidStopForegroundOnPause: false,
     ),
@@ -29,23 +27,29 @@ Future<void> main() async {
   runApp(const CallCenterApp());
 }
 
-// --------------------------------------------------------------------------
-// BACKGROUND HANDLER: Handles Bluetooth buttons & Call Detection
-// --------------------------------------------------------------------------
 class MyCallAudioHandler extends BaseAudioHandler {
-  // We must track the state manually via the stream in 3.0.1
   PhoneStateStatus _currentPhoneStatus = PhoneStateStatus.NOTHING;
 
   MyCallAudioHandler() {
-    // Start listening to the stream immediately in the background isolate
     PhoneState.stream.listen((event) {
       _currentPhoneStatus = event.status;
+      // If a call starts, we should set our state to "paused" so we don't interfere
+      // If a call ends, we set it back to "playing" to regain control of the button
+      if (_currentPhoneStatus == PhoneStateStatus.NOTHING || _currentPhoneStatus == PhoneStateStatus.CALL_ENDED) {
+        _takeControl();
+      }
     });
 
+    _takeControl();
+  }
+
+  // THIS IS THE KEY: We tell Android we are "playing" so we get the button events
+  void _takeControl() {
     playbackState.add(PlaybackState(
       controls: [MediaControl.play, MediaControl.pause],
       systemActions: {MediaAction.play, MediaAction.pause, MediaAction.playPause},
-      playing: false,
+      processingState: AudioProcessingState.ready,
+      playing: true, // We lie to the OS and say we are playing to hijack the button
     ));
   }
 
@@ -53,15 +57,16 @@ class MyCallAudioHandler extends BaseAudioHandler {
   Future<void> play() => _checkAndDial();
   @override
   Future<void> pause() => _checkAndDial();
+  
+  // Some headsets send 'stop' or 'fastForward' depending on the brand
+  @override
+  Future<void> stop() => _checkAndDial();
 
   Future<void> _checkAndDial() async {
-    // Logic: Only dial if phone is NOT in a call and NOT ringing
     if (_currentPhoneStatus != PhoneStateStatus.NOTHING && 
         _currentPhoneStatus != PhoneStateStatus.CALL_ENDED) {
-      debugPrint("Call active or ringing. Ignoring Bluetooth button.");
       return; 
     }
-
     await _makeBackgroundCall();
   }
 
@@ -88,11 +93,14 @@ class MyCallAudioHandler extends BaseAudioHandler {
       }
     }
     await database.close();
+    
+    // After dialing, ensure we still have focus
+    _takeControl();
   }
 }
 
 // --------------------------------------------------------------------------
-// UI: Call Center Design
+// UI (Same as before, no changes needed to UI isolate)
 // --------------------------------------------------------------------------
 class CallCenterApp extends StatelessWidget {
   const CallCenterApp({super.key});
@@ -126,8 +134,6 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
   final TextEditingController _textController = TextEditingController();
   List<PhoneNumberModel> _numbers = [];
   Map<String, int> _stats = {'total': 0, 'called': 0, 'remaining': 0};
-  
-  // Track status for the UI isolate using the stream
   PhoneStateStatus _uiPhoneStatus = PhoneStateStatus.NOTHING;
   StreamSubscription? _phoneSub;
   bool _isLoading = false;
@@ -136,16 +142,9 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    
-    // Listen to phone state for UI feedback
     _phoneSub = PhoneState.stream.listen((event) {
-      if (mounted) {
-        setState(() {
-          _uiPhoneStatus = event.status;
-        });
-      }
+      if (mounted) setState(() => _uiPhoneStatus = event.status);
     });
-    
     _refreshData();
   }
 
@@ -158,9 +157,7 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _refreshData();
-    }
+    if (state == AppLifecycleState.resumed) _refreshData();
   }
 
   Future<void> _refreshData() async {
@@ -168,11 +165,9 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
     final db = await openDatabase(p.join(dbPath, 'callcenter.db'), version: 1, onCreate: (db, v) async {
       await db.execute('CREATE TABLE numbers (id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT UNIQUE, wasCalled INTEGER)');
     });
-    
     final List<Map<String, dynamic>> res = await db.query('numbers');
     final total = Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM numbers')) ?? 0;
     final called = Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM numbers WHERE wasCalled = 1')) ?? 0;
-
     setState(() {
       _numbers = res.map((m) => PhoneNumberModel.fromMap(m)).toList();
       _stats = {'total': total, 'called': called, 'remaining': total - called};
@@ -183,21 +178,16 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
   Future<void> _parseAndAdd() async {
     if (_textController.text.isEmpty) return;
     setState(() => _isLoading = true);
-
     final dbPath = await getDatabasesPath();
     final db = await openDatabase(p.join(dbPath, 'callcenter.db'));
-
     RegExp exp = RegExp(r'[\d\+\-\(\)\s]{8,}');
     Iterable<RegExpMatch> matches = exp.allMatches(_textController.text);
-
     for (final match in matches) {
       String candidate = match.group(0)!.trim();
       String cleanDigits = candidate.replaceAll(RegExp(r'\D'), '');
-      
       if (cleanDigits.length == 10 && int.parse(cleanDigits.substring(2, 3)) >= 6) {
           candidate = '${cleanDigits.substring(0, 2)}9${cleanDigits.substring(2)}';
       }
-
       try {
         final parsed = PhoneNumber.parse(candidate, destinationCountry: IsoCode.BR);
         if (parsed.isValid()) {
@@ -206,7 +196,6 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
         }
       } catch (_) {}
     }
-
     _textController.clear();
     await db.close();
     await _refreshData();
@@ -218,16 +207,11 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
       await Permission.phone.request();
       return;
     }
-    
-    // Safety: Check if already in call
-    if (_uiPhoneStatus != PhoneStateStatus.NOTHING && 
-        _uiPhoneStatus != PhoneStateStatus.CALL_ENDED) {
+    if (_uiPhoneStatus != PhoneStateStatus.NOTHING && _uiPhoneStatus != PhoneStateStatus.CALL_ENDED) {
        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Already in a call!")));
        return;
     }
-
     await _handler.play();
-    // Tiny delay to allow background process to update DB
     Future.delayed(const Duration(seconds: 1), () => _refreshData());
   }
 
@@ -285,15 +269,11 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
                     ),
                   ),
                   const SizedBox(height: 20),
-                  Text(
-                    "Phone Status: ${_uiPhoneStatus.name.toUpperCase()}",
-                    style: const TextStyle(fontSize: 12, color: Colors.blueGrey, fontWeight: FontWeight.bold),
-                  ),
+                  Text("Status: ${_uiPhoneStatus.name}", style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
                 ],
               ),
             ),
           ),
-          const Align(alignment: Alignment.centerLeft, child: Padding(padding: EdgeInsets.only(left: 15), child: Text("Database:", style: TextStyle(fontWeight: FontWeight.bold)))),
           Expanded(
             child: ListView.builder(
               itemCount: _numbers.length,
