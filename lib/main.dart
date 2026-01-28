@@ -19,7 +19,6 @@ Future<void> main() async {
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.jv.calling.channel.audio',
       androidNotificationChannelName: 'Call Center Service',
-      // FIX: Changed to false to satisfy AudioService assertion logic
       androidNotificationOngoing: false, 
       androidStopForegroundOnPause: false,
     ),
@@ -46,8 +45,8 @@ class MyCallAudioHandler extends BaseAudioHandler {
   Future<void> pause() => _checkAndDial();
 
   Future<void> _checkAndDial() async {
-    // FIX: Updated syntax for phone_state 1.2.0
-    var status = await PhoneState.all.status;
+    // FIX for phone_state 3.0.1: Use PhoneState.status directly
+    var status = PhoneState.status; 
     if (status != PhoneStateStatus.NOTHING && status != PhoneStateStatus.CALL_ENDED) {
       debugPrint("Call active or ringing. Ignoring button.");
       return; 
@@ -195,8 +194,8 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
       return;
     }
     
-    // FIX: Updated syntax for manual button as well
-    var status = await PhoneState.all.status;
+    // FIX for phone_state 3.0.1: Use PhoneState.status
+    var status = PhoneState.status; 
     if (status != PhoneStateStatus.NOTHING && status != PhoneStateStatus.CALL_ENDED) {
        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Already in a call!")));
        return;
