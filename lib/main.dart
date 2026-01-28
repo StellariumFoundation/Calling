@@ -7,7 +7,7 @@ import 'package:flutter_phone_direct_caller/flutter_phone_direct_caller.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:phone_numbers_parser/phone_numbers_parser.dart';
 import 'package:audio_service/audio_service.dart';
-import 'package:phone_state/phone_state.dart'; // Detection library
+import 'package:phone_state/phone_state.dart';
 
 late MyCallAudioHandler _handler;
 
@@ -19,7 +19,8 @@ Future<void> main() async {
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.jv.calling.channel.audio',
       androidNotificationChannelName: 'Call Center Service',
-      androidNotificationOngoing: true,
+      // FIX: Changed to false to satisfy AudioService assertion logic
+      androidNotificationOngoing: false, 
       androidStopForegroundOnPause: false,
     ),
   );
@@ -45,14 +46,10 @@ class MyCallAudioHandler extends BaseAudioHandler {
   Future<void> pause() => _checkAndDial();
 
   Future<void> _checkAndDial() async {
-    // 1. Check if the phone is currently IDLE (not on a call)
-    // We use a simple platform check. If not IDLE, we ignore the button.
-    bool isPhoneIdle = true;
-    
-    // We check phone state via the stream or status
-    var status = await PhoneState.getStatus();
+    // FIX: Updated syntax for phone_state 1.2.0
+    var status = await PhoneState.all.status;
     if (status != PhoneStateStatus.NOTHING && status != PhoneStateStatus.CALL_ENDED) {
-      debugPrint("Call active or ringing. Ignoring Bluetooth button.");
+      debugPrint("Call active or ringing. Ignoring button.");
       return; 
     }
 
@@ -86,7 +83,7 @@ class MyCallAudioHandler extends BaseAudioHandler {
 }
 
 // --------------------------------------------------------------------------
-// FULL UI: Restored Call Center Design
+// UI: Call Center Design
 // --------------------------------------------------------------------------
 class CallCenterApp extends StatelessWidget {
   const CallCenterApp({super.key});
@@ -120,7 +117,6 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
   final TextEditingController _textController = TextEditingController();
   List<PhoneNumberModel> _numbers = [];
   Map<String, int> _stats = {'total': 0, 'called': 0, 'remaining': 0};
-  String? _lastCalled;
   bool _isLoading = false;
 
   @override
@@ -139,7 +135,7 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _refreshData(); // Sync database when returning to app
+      _refreshData();
     }
   }
 
@@ -160,7 +156,6 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
     await db.close();
   }
 
-  // Same Brazilian Ninth Digit Logic
   Future<void> _parseAndAdd() async {
     if (_textController.text.isEmpty) return;
     setState(() => _isLoading = true);
@@ -195,20 +190,18 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
   }
 
   void _manualCall() async {
-    // Check permission
     if (!await Permission.phone.isGranted) {
       await Permission.phone.request();
       return;
     }
     
-    // Check if on a call
-    var status = await PhoneState.getStatus();
+    // FIX: Updated syntax for manual button as well
+    var status = await PhoneState.all.status;
     if (status != PhoneStateStatus.NOTHING && status != PhoneStateStatus.CALL_ENDED) {
        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Already in a call!")));
        return;
     }
 
-    // Reuse the audio handler logic (triggers background dial)
     await _handler.play();
     await _refreshData();
   }
@@ -219,7 +212,6 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
       appBar: AppBar(title: const Text('Calling (Headset Enabled)'), centerTitle: true),
       body: Column(
         children: [
-          // 1. STATS BAR
           Container(
             color: Colors.grey[200],
             padding: const EdgeInsets.symmetric(vertical: 15),
@@ -232,8 +224,6 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
               ],
             ),
           ),
-
-          // 2. INPUT AREA
           Padding(
             padding: const EdgeInsets.all(15),
             child: TextField(
@@ -246,8 +236,6 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
               ),
             ),
           ),
-
-          // 3. CENTRAL BUTTON
           Expanded(
             child: Center(
               child: Column(
@@ -277,8 +265,6 @@ class _CallCenterHomeState extends State<CallCenterHome> with WidgetsBindingObse
               ),
             ),
           ),
-
-          // 4. PREVIEW LIST
           const Align(alignment: Alignment.centerLeft, child: Padding(padding: EdgeInsets.only(left: 15), child: Text("Database:", style: TextStyle(fontWeight: FontWeight.bold)))),
           Expanded(
             child: ListView.builder(
